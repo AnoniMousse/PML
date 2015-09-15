@@ -1,0 +1,34 @@
+---
+output:
+  html_document:
+    pandoc_args: [
+      "+RTS", "-K64m",
+      "-RTS"
+    ]
+---
+## Discrimination Between Correct and Incorrect Performance of a Weight Lifting Activity Based on Sensor Data
+
+Devices known as activity or fitness trackers have become popular for monitoring and tracking "fitness-related metrics such as distance walked or run, calorie consumption, and in some cases heartbeat and quality of sleep" (Wikipedia). This report describes an exercise in using a random forest algorithm to correctly identify a weight lifting procedure called curling done in either a correct manner or in one of four incorrect ways. The interested reader can learn more about the problem, equipment used, and data to be analyzed in the original 2013 paper by Veloso, Bulling, et al., found here: http://groupware.les.inf.puc-rio.br/har. 
+The results of the current analysis indicate that using a random forest algorithm we can correctly classify curls into one of the five categories 99.3% of the time, with an expected out of sample error of 0.7%, based on the sensor data.
+
+```{r results='hide', echo=FALSE}
+rm(list=ls())
+```
+
+First we load the data for modeling and a small validation data set:
+```{r cacke=TRUE}
+# trainURL <- 'https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv'
+# setInternet2(use = TRUE)
+# download.file(trainURL, 'pml-training.csv')
+
+CurlTrain <- read.csv("pml-training.csv",sep=",")
+
+# testURL <- 'https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv'
+# setInternet2(use = TRUE)
+# download.file(testURL, 'pml-testing.csv')
+CurlValidate <- read.csv("pml-testing.csv",sep=",")
+
+attach(CurlTrain)
+
+```
+In order to get a sense of the size, shape, and characteristics of the main and validation data sets, we run 
