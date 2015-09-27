@@ -63,21 +63,346 @@ img {
 
 <div id="discrimination-between-correct-and-incorrect-performance-of-a-weight-lifting-activity-based-on-sensor-data" class="section level2">
 <h2>Discrimination Between Correct and Incorrect Performance of a Weight Lifting Activity Based on Sensor Data</h2>
-<p>Devices known as activity or fitness trackers have become popular for monitoring and tracking “fitness-related metrics such as distance walked or run, calorie consumption, and in some cases heartbeat and quality of sleep” (Wikipedia). This report describes an exercise in using a random forest algorithm to correctly identify a weight lifting procedure called curling done in either a correct manner or in one of four incorrect ways. The interested reader can learn more about the problem, equipment used, and data to be analyzed in the original 2013 paper by Veloso, Bulling, et al., found here: <a href="http://groupware.les.inf.puc-rio.br/har">http://groupware.les.inf.puc-rio.br/har</a>. The results of the current analysis indicate that using a random forest algorithm we can correctly classify curls into one of the five categories 99.3% of the time, with an expected out of sample error of 0.7%, based on the sensor data.</p>
+<p>Devices known as activity or fitness trackers have become popular for monitoring and tracking “fitness-related metrics such as distance walked or run, calorie consumption, and in some cases heartbeat and quality of sleep” (Wikipedia). This report describes an exercise in using a random forest algorithm to correctly identify a weight lifting procedure called curling done in either a correct manner or in one of four incorrect ways. The interested reader can learn more about the problem, equipment used, and data to be analyzed in the original 2013 paper by Veloso, Bulling, et al., found here: <a href="http://groupware.les.inf.puc-rio.br/har">http://groupware.les.inf.puc-rio.br/har</a>. The results of the current analysis indicate an out-of-bag error rate of 0.0137 (accuracy=0.9863). The error rate in predicting the test set was 0.0054 (accuracy=0.9946). Thus we conclude that a random forest algorithm can classify the curling data with a high rate of acuracy.</p>
+<p>For the interested reader, I show the full analyses and some additional analyses. This supplementary material is NOT for grading and is only available for educational purposes at fsdfdfsf.</p>
 <p>First we load the data for modeling and a small validation data set:</p>
-<pre class="r"><code># trainURL &lt;- 'https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv'
-# setInternet2(use = TRUE)
-# download.file(trainURL, 'pml-training.csv')
+<pre class="r"><code>trainURL &lt;- 'https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv'
+setInternet2(use = TRUE)
+download.file(trainURL, 'pml-training.csv')
 
 CurlTrain &lt;- read.csv(&quot;pml-training.csv&quot;,sep=&quot;,&quot;)
 
-# testURL &lt;- 'https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv'
-# setInternet2(use = TRUE)
-# download.file(testURL, 'pml-testing.csv')
+testURL &lt;- 'https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv'
+setInternet2(use = TRUE)
+download.file(testURL, 'pml-testing.csv')
 CurlValidate &lt;- read.csv(&quot;pml-testing.csv&quot;,sep=&quot;,&quot;)
 
 attach(CurlTrain)</code></pre>
-<p>In order to get a sense of the size, shape, and characteristics of the main and validation data sets, we run</p>
+<p>In order to get a sense of the size, shape, and characteristics of the main and validation data sets, we run this command:</p>
+<pre class="r"><code>str(CurlTrain )
+str(CurlValidate)</code></pre>
+<p>The output is not shown here because of report size limitations, but it indicates that our dataset has 19,622 cases (rows) and 160 variables (features), and the validation set has 20 cases and also 160 variables.</p>
+<p>Next, load the libraries to be used and select out only those variables that pertain to the sensor data and the outcome.</p>
+<pre class="r"><code>library(caret)
+library(e1071)
+library(randomForest)
+
+cleanCurl &lt;- CurlTrain[, grep(&quot;belt|arm|dumbbell|forearm|classe&quot;, colnames(CurlTrain))]</code></pre>
+<p>Also, convert any predictors that were read as factors to numeric:</p>
+<pre class="r"><code>for (i in 1:(ncol(cleanCurl)-1)) {
+    cleanCurl[,i] &lt;- suppressWarnings(as.numeric(as.character(cleanCurl[,i])))
+} </code></pre>
+<p>The next step is to look at the distribution and quantity of missing values. Depending on the project, it is often possible to “plug” missing values by using one of the imputation methods to replace them with valid values.</p>
+<pre class="r"><code>## This is a popular way to find and count missing values by variable
+featMiss &lt;- sort(sapply(cleanCurl, function(x) sum(is.na(x))))
+table(featMiss)</code></pre>
+<pre><code>## featMiss
+##     0 19216 19217 19218 19220 19221 19225 19226 19227 19248 19293 19294 
+##    53    67     1     1     1     4     1     4     2     2     1     1 
+## 19296 19299 19300 19301 19622 
+##     2     1     4     2     6</code></pre>
+<p>Results indicate that 53 of the variables had no missing values, whereas the rest of the variables had all or almost all missing values. Since imputation works best when missing values are sparse and random, the best thing to do here is to drop the variables with missing values. That is accomplished with this popular anonymous function:</p>
+<pre class="r"><code>cleanCurl &lt;- cleanCurl[,!sapply(cleanCurl,function(x) any(is.na(x)))]</code></pre>
+<p>I have found from experience that it is usually not a good idea to proceed in the analysis with bad data. Since there are only 52 predictors, I decided to look at their distributions (not shown here). Most of them have bimodal distributions with a number of outliers. I created a version of the features that were all standardized (mean=0 and SD=1). Examining the distributions of the standardized predictors indicated that some were skewed with extreme values. However, there were values beyond -100 or +100 for some of these values, which indicates that they are bad values. I decided to look for variables that had standardized values beyond +/-15.</p>
+<pre class="r"><code>#create standardized variables
+cleanScale &lt;- scale(cleanCurl[,-53])
+cleanScale &lt;- as.data.frame(cleanScale)
+summary(cleanScale)</code></pre>
+<p>There is not room for the output here, but it indicates that at least one case has variables with standardized values beyoud -15 and +15. I added row numbers to let me see which cases (rows) had the bad values.</p>
+<pre class="r"><code>rowID &lt;- as.vector(seq(dim(cleanScale)[1]))
+cleanScale &lt;- cbind(rowID, cleanScale)
+## The following subsetting lists only one case (row) with extreme standardized values, #5373
+cleanScale[cleanScale$gyros_dumbbell_x&lt; -15|cleanScale$gyros_dumbbell_y&gt;15|
+            cleanScale$gyros_dumbbell_z&gt;15|cleanScale$gyros_forearm_x&lt; -15|
+            cleanScale$gyros_forearm_y&gt;15|cleanScale$gyros_forearm_z&gt;15,]</code></pre>
+<p>Only one row, number 5373, had extreme values, which appear to be outside the range of possible values. The following syntax removes the row with the bad values:</p>
+<pre class="r"><code>## reattach row ID to the original data to enable us to remove the case with the bad values
+rowID &lt;- as.vector(seq(dim(cleanCurl)[1]))
+cleanCurl &lt;- cbind(rowID, cleanCurl)
+finalCleanCurl &lt;- cleanCurl[cleanCurl$rowID != 5373,]</code></pre>
+<p>Now we subset subset 70% of the clean data cases for training and 30% for testing, also removing the rowid var.</p>
+<pre class="r"><code>set.seed(420)
+
+curlTrain &lt;- createDataPartition(y = finalCleanCurl$classe,
+                                 p = 0.70,list = FALSE)
+
+training &lt;- finalCleanCurl[curlTrain,-1]
+testing &lt;- finalCleanCurl[-curlTrain,-1]
+
+finTraining &lt;- training
+detach(CurlTrain)</code></pre>
+<p>Enable multi-core processing to speed up analyses.</p>
+<pre class="r"><code>library(doParallel)
+cl &lt;- makeCluster(detectCores())
+registerDoParallel(cl)</code></pre>
+<p>I will use the training data to look for multicolinearity. First we use this syntax to identify intercorrelated variables.</p>
+<pre class="r"><code>M &lt;- abs(cor(training[,-53]))
+diag(M) &lt;- 0
+which(M &gt; .85,arr.ind=TRUE)</code></pre>
+<pre><code>##                  row col
+## total_accel_belt   4   1
+## accel_belt_y       9   1
+## accel_belt_z      10   1
+## accel_belt_x       8   2
+## magnet_belt_x     11   2
+## roll_belt          1   4
+## accel_belt_y       9   4
+## accel_belt_z      10   4
+## pitch_belt         2   8
+## magnet_belt_x     11   8
+## roll_belt          1   9
+## total_accel_belt   4   9
+## accel_belt_z      10   9
+## roll_belt          1  10
+## total_accel_belt   4  10
+## accel_belt_y       9  10
+## pitch_belt         2  11
+## accel_belt_x       8  11
+## gyros_arm_y       19  18
+## gyros_arm_x       18  19</code></pre>
+<p>I extract the intercorrelated variables from the training set into a small data.frame.</p>
+<pre class="r"><code>attach(training)
+smallTrainDat &lt;- data.frame(roll_belt,accel_belt_y,accel_belt_z,total_accel_belt,
+                            accel_belt_x,magnet_belt_x,pitch_belt,
+                            gyros_arm_x,gyros_arm_y)</code></pre>
+<p>We can arrange them in a matrix (syntax not echoed but avaiable at <a href="http://myowelt.blogspot.com/2008/04/beautiful-correlation-tables-in-r.html">http://myowelt.blogspot.com/2008/04/beautiful-correlation-tables-in-r.html</a>). Here we see that there are three clusters of intercorrelated variables.</p>
+<pre class="r"><code>corstarsl(smallTrainDat)</code></pre>
+<pre><code>##                  roll_belt accel_belt_y accel_belt_z total_accel_belt
+## roll_belt                                                            
+## accel_belt_y       0.92***                                           
+## accel_belt_z      -0.99***     -0.93***                              
+## total_accel_belt   0.98***      0.93***     -0.97***                 
+## accel_belt_x       0.25***     -0.04***     -0.21***          0.17***
+## magnet_belt_x      0.35***      0.09***     -0.30***          0.29***
+## pitch_belt        -0.21***      0.09***      0.16***         -0.14***
+## gyros_arm_x        0.03***      0.02*       -0.02**           0.02** 
+## gyros_arm_y       -0.23***     -0.20***      0.22***         -0.22***
+##                  accel_belt_x magnet_belt_x pitch_belt gyros_arm_x
+## roll_belt                                                         
+## accel_belt_y                                                      
+## accel_belt_z                                                      
+## total_accel_belt                                                  
+## accel_belt_x                                                      
+## magnet_belt_x         0.90***                                     
+## pitch_belt           -0.97***      -0.89***                       
+## gyros_arm_x           0.06***       0.06***   -0.05***            
+## gyros_arm_y          -0.12***      -0.14***    0.11***    -0.92***</code></pre>
+<p>Now I am going to use an old school way of combining intercorrelated variables into one. This keeps information from all the variables but reduces 9 variables to 3 aggregated variables. First, we center all the intercorrelated variables at zero.</p>
+<pre class="r"><code>preSmallTrain &lt;- preProcess(smallTrainDat,method=c(&quot;center&quot;))
+
+scaledSmallTrain &lt;-  predict(preSmallTrain,smallTrainDat)</code></pre>
+<p>Then for each cluster of centered intercorrelated variables, we create an aggregated variable by calculating the mean of the variables. Then we remove the variables from the training set and add the aggregated variable to the training set. This reduces the number of features to 46.</p>
+<pre class="r"><code>mean_1 &lt;- (scaledSmallTrain$roll_belt+scaledSmallTrain$accel_belt_y-scaledSmallTrain$accel_belt_z+
+              scaledSmallTrain$total_accel_belt)/4
+
+training$roll_belt &lt;- NULL
+training$accel_belt_z &lt;- NULL
+training$accel_belt_y &lt;- NULL
+training$total_accel_belt &lt;- NULL
+
+mean_2 &lt;- (scaledSmallTrain$accel_belt_x+scaledSmallTrain$magnet_belt_x-scaledSmallTrain$pitch_belt)/3
+
+training$accel_belt_x &lt;- NULL
+training$magnet_belt_x &lt;- NULL
+training$pitch_belt &lt;- NULL
+
+mean_3 &lt;- (scaledSmallTrain$gyros_arm_x-scaledSmallTrain$gyros_arm_y)/2
+
+training$gyros_arm_x &lt;- NULL
+training$gyros_arm_y &lt;- NULL
+
+finalTraining &lt;- cbind(mean_1,mean_2,mean_3,training)
+detach(training)
+
+# Remove aggregate variables from workspace
+mean_1 &lt;- NULL
+mean_2 &lt;- NULL
+mean_3 &lt;- NULL</code></pre>
+<p>Now we do the same thing for the testing dataset, except that we use the training dataset values to center the testing data.</p>
+<pre class="r"><code>attach(testing)
+smallTestDat &lt;- data.frame(roll_belt,accel_belt_y,accel_belt_z,total_accel_belt,
+                           accel_belt_x,magnet_belt_x,pitch_belt,
+                           gyros_arm_x,gyros_arm_y)
+
+scaledTestSmall &lt;-  predict(preSmallTrain,smallTestDat)
+
+mean_1 &lt;- (scaledTestSmall$roll_belt+scaledTestSmall$accel_belt_y-scaledTestSmall$accel_belt_z+
+              scaledTestSmall$total_accel_belt)/4
+
+testing$roll_belt &lt;- NULL
+testing$accel_belt_z &lt;- NULL
+testing$accel_belt_y &lt;- NULL
+testing$total_accel_belt &lt;- NULL
+
+mean_2 &lt;- (scaledTestSmall$accel_belt_x+scaledTestSmall$magnet_belt_x-scaledTestSmall$pitch_belt)/3
+
+testing$accel_belt_x &lt;- NULL
+testing$magnet_belt_x &lt;- NULL
+testing$pitch_belt &lt;- NULL
+
+mean_3 &lt;- (scaledTestSmall$gyros_arm_x-scaledTestSmall$gyros_arm_y)/2
+
+testing$gyros_arm_x &lt;- NULL
+testing$gyros_arm_y &lt;- NULL
+
+finalTesting &lt;- cbind(mean_1,mean_2,mean_3,testing)
+detach(testing)
+
+mean_1 &lt;- NULL
+mean_2 &lt;- NULL
+mean_3 &lt;- NULL</code></pre>
+<p>And we also do this to the small validation set (N=20), after keeping only those variables that appear in the training dataset. The values from the training data are also used to center the validation data.</p>
+<pre class="r"><code>validating &lt;- CurlValidate[ ,which(names(CurlValidate) %in% names(finTraining))]
+
+attach(validating)
+scaledSmallValidating &lt;- data.frame(roll_belt,accel_belt_y,accel_belt_z,total_accel_belt,
+                                    accel_belt_x,magnet_belt_x,pitch_belt,
+                                    gyros_arm_x,gyros_arm_y)
+ 
+scaledValidSmall &lt;- predict(preSmallTrain,scaledSmallValidating)
+
+mean_1 &lt;- (scaledValidSmall$roll_belt+scaledValidSmall$accel_belt_y-scaledValidSmall$accel_belt_z+
+              scaledValidSmall$total_accel_belt)/4
+
+validating$roll_belt &lt;- NULL
+validating$accel_belt_z &lt;- NULL
+validating$accel_belt_y &lt;- NULL
+validating$total_accel_belt &lt;- NULL
+
+mean_2 &lt;- (scaledValidSmall$accel_belt_x+scaledValidSmall$magnet_belt_x-scaledValidSmall$pitch_belt)/3
+
+validating$accel_belt_x &lt;- NULL
+validating$magnet_belt_x &lt;- NULL
+validating$pitch_belt &lt;- NULL
+
+mean_3 &lt;- (scaledValidSmall$gyros_arm_x-scaledValidSmall$gyros_arm_y)/2
+
+validating$gyros_arm_x &lt;- NULL
+validating$gyros_arm_y &lt;- NULL
+
+finalValidating &lt;- cbind(mean_1,mean_2,mean_3,validating)
+detach(validating)</code></pre>
+<p>Finally, I use a random forest procedure for the predictions. Random forest uses bagged samples so that n-fold cross vaidation is not necessary (see Breiman x for details.</p>
+<pre class="r"><code>set.seed(420)
+system.time({
+    rf.fit &lt;- train(x=finalTraining[,1:46],y=finalTraining[,47],importance=TRUE)
+})</code></pre>
+<pre><code>##     user   system  elapsed 
+##   297.77     1.08 17568.14</code></pre>
+<p>The bootstrapped samples indicate an out-of-bag error rate of 0.0137 (i.e., 1 - 0.9863).</p>
+<pre class="r"><code>rf.fit</code></pre>
+<pre><code>## Random Forest 
+## 
+## 13737 samples
+##    46 predictor
+##     5 classes: 'A', 'B', 'C', 'D', 'E' 
+## 
+## No pre-processing
+## Resampling: Bootstrapped (25 reps) 
+## 
+## Summary of sample sizes: 13737, 13737, 13737, 13737, 13737, 13737, ... 
+## 
+## Resampling results across tuning parameters:
+## 
+##   mtry  Accuracy   Kappa      Accuracy SD  Kappa SD   
+##    2    0.9858063  0.9820373  0.002031411  0.002567024
+##   24    0.9861221  0.9824365  0.001888041  0.002390854
+##   46    0.9731961  0.9660756  0.005322566  0.006731708
+## 
+## Accuracy was used to select the optimal model using  the largest value.
+## The final value used for the model was mtry = 24.</code></pre>
+<pre class="r"><code>confusionMatrix(rf.fit)</code></pre>
+<pre><code>## Bootstrapped (25 reps) Confusion Matrix 
+## 
+## (entries are percentages of table totals)
+##  
+##           Reference
+## Prediction    A    B    C    D    E
+##          A 28.4  0.3  0.0  0.0  0.0
+##          B  0.1 19.1  0.3  0.0  0.0
+##          C  0.0  0.1 16.9  0.3  0.0
+##          D  0.0  0.0  0.1 16.1  0.1
+##          E  0.0  0.0  0.0  0.0 18.2</code></pre>
+<p>First we want to see how well we fit the training data (a minimum requirement for any model):</p>
+<pre class="r"><code>predTraining &lt;- predict(rf.fit, newdata=finalTraining)
+summary(predTraining)</code></pre>
+<pre><code>##    A    B    C    D    E 
+## 3906 2658 2396 2252 2525</code></pre>
+<pre class="r"><code>print(confusionMatrix(predTraining,finalTraining$classe))</code></pre>
+<pre><code>## Confusion Matrix and Statistics
+## 
+##           Reference
+## Prediction    A    B    C    D    E
+##          A 3906    0    0    0    0
+##          B    0 2658    0    0    0
+##          C    0    0 2396    0    0
+##          D    0    0    0 2252    0
+##          E    0    0    0    0 2525
+## 
+## Overall Statistics
+##                                      
+##                Accuracy : 1          
+##                  95% CI : (0.9997, 1)
+##     No Information Rate : 0.2843     
+##     P-Value [Acc &gt; NIR] : &lt; 2.2e-16  
+##                                      
+##                   Kappa : 1          
+##  Mcnemar's Test P-Value : NA         
+## 
+## Statistics by Class:
+## 
+##                      Class: A Class: B Class: C Class: D Class: E
+## Sensitivity            1.0000   1.0000   1.0000   1.0000   1.0000
+## Specificity            1.0000   1.0000   1.0000   1.0000   1.0000
+## Pos Pred Value         1.0000   1.0000   1.0000   1.0000   1.0000
+## Neg Pred Value         1.0000   1.0000   1.0000   1.0000   1.0000
+## Prevalence             0.2843   0.1935   0.1744   0.1639   0.1838
+## Detection Rate         0.2843   0.1935   0.1744   0.1639   0.1838
+## Detection Prevalence   0.2843   0.1935   0.1744   0.1639   0.1838
+## Balanced Accuracy      1.0000   1.0000   1.0000   1.0000   1.0000</code></pre>
+<p>The model fits the training set perfectly. More interesting is the fit on the testing data, since it gives us a better estimate of how well we can do with futue datasets:</p>
+<pre class="r"><code>predTesting &lt;- predict(rf.fit,newdata=finalTesting)
+summary(predTesting)</code></pre>
+<pre><code>##    A    B    C    D    E 
+## 1681 1142 1016  962 1083</code></pre>
+<pre class="r"><code>print(confusionMatrix(predTesting,finalTesting$classe))</code></pre>
+<pre><code>## Confusion Matrix and Statistics
+## 
+##           Reference
+## Prediction    A    B    C    D    E
+##          A 1671    9    0    1    0
+##          B    2 1128   12    0    0
+##          C    0    2 1008    6    0
+##          D    0    0    6  956    0
+##          E    0    0    0    1 1082
+## 
+## Overall Statistics
+##                                          
+##                Accuracy : 0.9934         
+##                  95% CI : (0.991, 0.9953)
+##     No Information Rate : 0.2843         
+##     P-Value [Acc &gt; NIR] : &lt; 2.2e-16      
+##                                          
+##                   Kappa : 0.9916         
+##  Mcnemar's Test P-Value : NA             
+## 
+## Statistics by Class:
+## 
+##                      Class: A Class: B Class: C Class: D Class: E
+## Sensitivity            0.9988   0.9903   0.9825   0.9917   1.0000
+## Specificity            0.9976   0.9970   0.9984   0.9988   0.9998
+## Pos Pred Value         0.9941   0.9877   0.9921   0.9938   0.9991
+## Neg Pred Value         0.9995   0.9977   0.9963   0.9984   1.0000
+## Prevalence             0.2843   0.1936   0.1744   0.1638   0.1839
+## Detection Rate         0.2840   0.1917   0.1713   0.1625   0.1839
+## Detection Prevalence   0.2857   0.1941   0.1727   0.1635   0.1841
+## Balanced Accuracy      0.9982   0.9937   0.9904   0.9952   0.9999</code></pre>
+<p>The model did quite well on all of the test cases. Using the error rate on the testing data, we get a less conservative estimate of out of sample error of 0.0054 (i.e., 1 - 0.9946). The final test of the quality of the model is its performance on prediction of the validation dataset:</p>
+<pre class="r"><code>predValid &lt;- predict(rf.fit,newdata=finalValidating)
+print(predValid)</code></pre>
+<pre><code>##  [1] B A B A A E D B A A B C B A E E A B B B
+## Levels: A B C D E</code></pre>
+<p>The 20 classe values that my model predicts are the correct ones as indicated by the submission to the autograder, i.e., 100% accuracy.</p>
 </div>
 
 

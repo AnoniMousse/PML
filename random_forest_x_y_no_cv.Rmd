@@ -1,0 +1,328 @@
+---
+output:
+  html_document:
+    pandoc_args: [
+      "+RTS", "-K64m",
+      "-RTS"
+    ]
+---
+## Discrimination Between Correct and Incorrect Performance of a Weight Lifting Activity Based on Sensor Data
+
+Devices known as activity or fitness trackers have become popular for monitoring and tracking "fitness-related metrics such as distance walked or run, calorie consumption, and in some cases heartbeat and quality of sleep" (Wikipedia). This report describes an exercise in using a random forest algorithm to correctly identify a weight lifting procedure called curling done in either a correct manner or in one of four incorrect ways. The interested reader can learn more about the problem, equipment used, and data to be analyzed in the original 2013 paper by Veloso, Bulling, et al., found here: http://groupware.les.inf.puc-rio.br/har. 
+The results of the current analysis indicate an out-of-bag error rate of 0.0137 (accuracy=0.9863). The error rate in predicting the test set was 0.0054 (accuracy=0.9946). Thus we conclude that a random forest algorithm can classify the curling data with a high rate of acuracy.
+
+For the interested reader, I show the full analyses and some additional analyses. This supplementary material is NOT for grading and is only available for educational purposes at fsdfdfsf.
+
+```{r results='hide', echo=FALSE}
+rm(list=ls())
+```
+
+First we load the data for modeling and a small validation data set:
+```{r cacke=TRUE}
+# trainURL <- 'https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv'
+# setInternet2(use = TRUE)
+# download.file(trainURL, 'pml-training.csv')
+
+CurlTrain <- read.csv("pml-training.csv",sep=",")
+
+# testURL <- 'https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv'
+# setInternet2(use = TRUE)
+# download.file(testURL, 'pml-testing.csv')
+CurlValidate <- read.csv("pml-testing.csv",sep=",")
+
+attach(CurlTrain)
+
+```
+In order to get a sense of the size, shape, and characteristics of the main and validation data sets, we run this command:
+```{r dimensions,results='hide'}
+str(CurlTrain )
+str(CurlValidate)
+```
+
+The output is not shown here because of report size limitations, but it indicates that our dataset has 19,622 cases (rows) and 160 variables (features), and the validation set has 20 cases and also 160 variables.
+
+Next, load the libraries to be used and select out only those variables that pertain to the sensor data and the outcome.
+```{r select_vars, message=FALSE,} 
+library(caret)
+library(e1071)
+library(randomForest)
+
+cleanCurl <- CurlTrain[, grep("belt|arm|dumbbell|forearm|classe", colnames(CurlTrain))]
+```
+
+Also, convert any predictors that were read as factors to numeric:
+```{r convert_to_numeric,results='hide'}
+for (i in 1:(ncol(cleanCurl)-1)) {
+    cleanCurl[,i] <- suppressWarnings(as.numeric(as.character(cleanCurl[,i])))
+} 
+```
+
+The next step is to look at the distribution and quantity of missing values. Depending on the project, it is often possible to "plug" missing values by using one of the imputation methods to replace them with valid values. 
+
+```{r look_for_missing}
+## This is a popular way to find and count missing values by variable
+featMiss <- sort(sapply(cleanCurl, function(x) sum(is.na(x))))
+table(featMiss)
+```
+Results indicate that 53 of the variables had no missing values, whereas the rest of the variables had all or almost all missing values. Since imputation works best when missing values are sparse and random, the best thing to do here is to drop the variables with missing values. That is accomplished with this popular anonymous function:
+``` {r drop_missing}
+cleanCurl <- cleanCurl[,!sapply(cleanCurl,function(x) any(is.na(x)))]
+```
+
+I have found from experience that it is usually not a good idea to proceed in the analysis with bad data. Since there are only 52 predictors, I decided to look at their distributions (not shown here). Most of them have bimodal distributions with a number of outliers. I created a version of the features that were all standardized (mean=0 and SD=1). Examining the distributions of the standardized predictors indicated that some were skewed with extreme values. However, there were values beyond -100 or +100 for some of these values, which indicates that they are bad values. I decided to look for variables that had standardized values beyond +/-15. 
+
+
+```{r find_outliers,results='hide' }
+#create standardized variables
+cleanScale <- scale(cleanCurl[,-53])
+cleanScale <- as.data.frame(cleanScale)
+summary(cleanScale)
+```
+There is not room for the output here, but it indicates that at least one case has variables with standardized values beyoud -15 and +15. I added row numbers to let me see which cases (rows) had the bad values. 
+
+```{r results='hide' }
+rowID <- as.vector(seq(dim(cleanScale)[1]))
+cleanScale <- cbind(rowID, cleanScale)
+## The following subsetting lists only one case (row) with extreme standardized values, #5373
+cleanScale[cleanScale$gyros_dumbbell_x< -15|cleanScale$gyros_dumbbell_y>15|
+            cleanScale$gyros_dumbbell_z>15|cleanScale$gyros_forearm_x< -15|
+            cleanScale$gyros_forearm_y>15|cleanScale$gyros_forearm_z>15,]
+```
+
+Only one row, number 5373, had extreme values, which appear to be outside the range of possible values. The following syntax removes the row with the bad values:
+
+```{r remove_bad_row, results='hide' }
+## reattach row ID to the original data to enable us to remove the case with the bad values
+rowID <- as.vector(seq(dim(cleanCurl)[1]))
+cleanCurl <- cbind(rowID, cleanCurl)
+finalCleanCurl <- cleanCurl[cleanCurl$rowID != 5373,]
+```
+
+Now we subset subset 70% of the clean data cases for training and 30% for testing, also removing the rowid var.
+
+```{r split_training_testing }
+set.seed(420)
+
+curlTrain <- createDataPartition(y = finalCleanCurl$classe,
+                                 p = 0.70,list = FALSE)
+
+training <- finalCleanCurl[curlTrain,-1]
+testing <- finalCleanCurl[-curlTrain,-1]
+
+finTraining <- training
+detach(CurlTrain)
+```
+
+Enable multi-core processing to speed up analyses.
+
+```{r paralellize, message=FALSE}
+library(doParallel)
+cl <- makeCluster(detectCores())
+registerDoParallel(cl)
+
+```
+I will use the training data to look for multicolinearity. First we use this syntax to identify intercorrelated variables.
+
+```{r }
+
+M <- abs(cor(training[,-53]))
+diag(M) <- 0
+which(M > .85,arr.ind=TRUE)
+
+```
+
+
+```{r correl_matrix, echo=FALSE}
+
+corstarsl <- function(x){ 
+    require(Hmisc) 
+    x <- as.matrix(x) 
+    R <- rcorr(x)$r 
+    p <- rcorr(x)$P 
+    
+    ## define notions for significance levels; spacing is important.
+    mystars <- ifelse(p < .001, "***", ifelse(p < .01, "** ", ifelse(p < .05, "*  ", " ")))
+    
+    ## trunctuate the matrix that holds the correlations to two decimal
+    R <- format(round(cbind(rep(-1.11, ncol(x)), R), 2))[,-1] 
+    
+    ## build a new matrix that includes the correlations with their apropriate stars 
+    Rnew <- matrix(paste(R, mystars, sep=""), ncol=ncol(x)) 
+    diag(Rnew) <- paste(diag(R), " ", sep="") 
+    rownames(Rnew) <- colnames(x) 
+    colnames(Rnew) <- paste(colnames(x), "", sep="") 
+    
+    ## remove upper triangle
+    Rnew <- as.matrix(Rnew)
+    Rnew[upper.tri(Rnew, diag = TRUE)] <- ""
+    Rnew <- as.data.frame(Rnew) 
+    
+    ## remove last column and return the matrix (which is now a data frame)
+    Rnew <- cbind(Rnew[1:length(Rnew)-1])
+    return(Rnew) 
+}
+```
+
+I extract the intercorrelated variables from the training set into a small data.frame.
+``` {r combine_correl_vars}
+attach(training)
+smallTrainDat <- data.frame(roll_belt,accel_belt_y,accel_belt_z,total_accel_belt,
+                            accel_belt_x,magnet_belt_x,pitch_belt,
+                            gyros_arm_x,gyros_arm_y)
+```
+
+We can arrange them in a matrix (syntax not echoed but avaiable at http://myowelt.blogspot.com/2008/04/beautiful-correlation-tables-in-r.html). Here we see that there are three clusters of intercorrelated variables.
+
+```{r correl_matrix2, message=FALSE}
+corstarsl(smallTrainDat)
+```
+
+Now I am going to use an old school way of combining intercorrelated variables into one. This keeps information from all the variables but reduces 9 variables to 3 aggregated variables. First, we center all the intercorrelated variables at zero.
+
+```{r center_etc, }
+preSmallTrain <- preProcess(smallTrainDat,method=c("center"))
+
+scaledSmallTrain <-  predict(preSmallTrain,smallTrainDat)
+```
+Then for each cluster of centered intercorrelated variables, we create an aggregated variable by calculating the mean of the variables. Then we remove the variables from the training set and add the aggregated variable to the training set. This reduces the number of features to 46.
+
+```{r aggregate}
+
+mean_1 <- (scaledSmallTrain$roll_belt+scaledSmallTrain$accel_belt_y-scaledSmallTrain$accel_belt_z+
+              scaledSmallTrain$total_accel_belt)/4
+
+training$roll_belt <- NULL
+training$accel_belt_z <- NULL
+training$accel_belt_y <- NULL
+training$total_accel_belt <- NULL
+
+mean_2 <- (scaledSmallTrain$accel_belt_x+scaledSmallTrain$magnet_belt_x-scaledSmallTrain$pitch_belt)/3
+
+training$accel_belt_x <- NULL
+training$magnet_belt_x <- NULL
+training$pitch_belt <- NULL
+
+mean_3 <- (scaledSmallTrain$gyros_arm_x-scaledSmallTrain$gyros_arm_y)/2
+
+training$gyros_arm_x <- NULL
+training$gyros_arm_y <- NULL
+
+finalTraining <- cbind(mean_1,mean_2,mean_3,training)
+detach(training)
+
+# Remove aggregate variables from workspace
+mean_1 <- NULL
+mean_2 <- NULL
+mean_3 <- NULL
+```
+Now we do the same thing for the testing dataset, except that we use the training dataset values to center the testing data.
+
+```{r aggregate_testing}
+attach(testing)
+smallTestDat <- data.frame(roll_belt,accel_belt_y,accel_belt_z,total_accel_belt,
+                           accel_belt_x,magnet_belt_x,pitch_belt,
+                           gyros_arm_x,gyros_arm_y)
+
+scaledTestSmall <-  predict(preSmallTrain,smallTestDat)
+
+mean_1 <- (scaledTestSmall$roll_belt+scaledTestSmall$accel_belt_y-scaledTestSmall$accel_belt_z+
+              scaledTestSmall$total_accel_belt)/4
+
+testing$roll_belt <- NULL
+testing$accel_belt_z <- NULL
+testing$accel_belt_y <- NULL
+testing$total_accel_belt <- NULL
+
+mean_2 <- (scaledTestSmall$accel_belt_x+scaledTestSmall$magnet_belt_x-scaledTestSmall$pitch_belt)/3
+
+testing$accel_belt_x <- NULL
+testing$magnet_belt_x <- NULL
+testing$pitch_belt <- NULL
+
+mean_3 <- (scaledTestSmall$gyros_arm_x-scaledTestSmall$gyros_arm_y)/2
+
+testing$gyros_arm_x <- NULL
+testing$gyros_arm_y <- NULL
+
+finalTesting <- cbind(mean_1,mean_2,mean_3,testing)
+detach(testing)
+
+mean_1 <- NULL
+mean_2 <- NULL
+mean_3 <- NULL
+```
+And we also do this to the small validation set (N=20), after keeping only those variables that appear in the training dataset. The values from the training data are also used to center the validation data.
+
+```{r validation}
+validating <- CurlValidate[ ,which(names(CurlValidate) %in% names(finTraining))]
+
+attach(validating)
+scaledSmallValidating <- data.frame(roll_belt,accel_belt_y,accel_belt_z,total_accel_belt,
+                                    accel_belt_x,magnet_belt_x,pitch_belt,
+                                    gyros_arm_x,gyros_arm_y)
+ 
+scaledValidSmall <- predict(preSmallTrain,scaledSmallValidating)
+
+mean_1 <- (scaledValidSmall$roll_belt+scaledValidSmall$accel_belt_y-scaledValidSmall$accel_belt_z+
+              scaledValidSmall$total_accel_belt)/4
+
+validating$roll_belt <- NULL
+validating$accel_belt_z <- NULL
+validating$accel_belt_y <- NULL
+validating$total_accel_belt <- NULL
+
+mean_2 <- (scaledValidSmall$accel_belt_x+scaledValidSmall$magnet_belt_x-scaledValidSmall$pitch_belt)/3
+
+validating$accel_belt_x <- NULL
+validating$magnet_belt_x <- NULL
+validating$pitch_belt <- NULL
+
+mean_3 <- (scaledValidSmall$gyros_arm_x-scaledValidSmall$gyros_arm_y)/2
+
+validating$gyros_arm_x <- NULL
+validating$gyros_arm_y <- NULL
+
+finalValidating <- cbind(mean_1,mean_2,mean_3,validating)
+detach(validating)
+
+```
+Finally, I use a random forest procedure for the predictions. Random forest uses bagged samples so that n-fold cross vaidation is not necessary (see Breiman x for details.
+
+```{r random_forest, cache=TRUE}
+set.seed(420)
+system.time({
+    rf.fit <- train(x=finalTraining[,1:46],y=finalTraining[,47],importance=TRUE)
+})
+```    
+
+The bootstrapped samples indicate an out-of-bag error rate of 0.0137 (i.e., 1 - 0.9863).
+
+```{r predict_training}
+rf.fit
+confusionMatrix(rf.fit)
+```
+First we want to see how well we fit the training data (a minimum requirement for any model):
+
+```{r }
+
+predTraining <- predict(rf.fit, newdata=finalTraining)
+summary(predTraining)
+print(confusionMatrix(predTraining,finalTraining$classe))
+```
+
+The model fits the training set perfectly. More interesting is the fit on the testing data, since it gives us a better estimate of how well we can do with futue datasets:
+
+```{r predict_testing, cache=TRUE}
+predTesting <- predict(rf.fit,newdata=finalTesting)
+summary(predTesting)
+print(confusionMatrix(predTesting,finalTesting$classe))
+```
+
+The model did quite well on all of the test cases. Using the error rate on the testing data, we get a less conservative estimate of out of sample error of 0.0054 (i.e., 1 - 0.9946). The final test of the quality of the model is its performance on prediction of the validation dataset:
+
+```{r predict_validation, cache=TRUE}
+predValid <- predict(rf.fit,newdata=finalValidating)
+print(predValid)
+```
+The 20 classe values that my model predicts are the correct ones as indicated by the submission to the autograder, i.e., 100% accuracy.
+
